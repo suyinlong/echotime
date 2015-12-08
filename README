@@ -1,0 +1,277 @@
+AUTHOR INFORMATION
+==================
+
+Author :     Yinlong Su
+Student ID : 110461173
+Email :      yinlsu@cs.stonybrook.edu
+
+
+COMPILE AND RUN
+===============
+
+Make sure the library and source file readline.c are in right location:
+
+    libunp.a    /home/courses/cse533/Stevens/unpv13e_solaris2.10/libunp.a
+    readline.c  /home/courses/cse533/Stevens/unpv13e_solaris2.10/threads/readline.c
+
+Execute the following from the directory to compile the source code:
+
+    make                # use "make" to compile the source
+
+Run the programs:
+
+    ./server &          # run the server in daemon mode
+    ./client 127.0.0.1  # run the client
+
+
+SYSTEM DOCUMENTATION
+====================
+
+This program is a TCP socket based echo and time services server and client.
+consists of two parts: the server and the client. In the server
+
+1.  Server part (tcpechotimesrv.c)
+
+    When starting the server, you can use the following command
+
+        ./server &
+
+    to initiate the server in daemon mode, in which the server will run as
+    a background process.
+
+    a.  Socket options
+        The server uses fcntl() function to set both listening socket
+        nonblocking by FNDELAY. Also, the server uses SO_REUSEADDR socket
+        option for reducing the "address already in use" error. And the
+        SO_KEEPALIVE option has been used to close those silently terminate
+        ECHO service clients, thus keeping the server healthy.
+
+    b.  Nonblocking listening sockets
+        The server sockets used for listening are set to nonblocking and
+        are monitored by Select() function. Once the socket is connected, the
+        file descriptor is passed to the client thread function (i.e.,
+        echoserv or timeserv).
+
+    c.  Multi-threading
+        The server uses multiple threads to handle the request of clients.
+        When a client connection is accepted, the server create a thread to
+        handle the specific requested service only for the client. The client
+        thread is detached from the main thread. And the main thread can wait
+        for another clients. Thus the server can handle multiple clients at
+        the same time.
+
+    d.  ECHO Service
+        The port number of ECHO service is 61173 (defined in echotime.h). This
+        service is basically sending back an identical copy of the data it
+        received from the client.
+        When the thread function echoserv() received the connected socket file
+        descriptor from the main thread, it detaches itself and call str_echo()
+        to handle main process of ECHO service.
+        In str_echo() function, select() is used to notify whether the socket
+        is readable as well as monitor the termination of connection. When the
+        socket has data, it reads the data and sends back. If select() is
+        interrupted by a signal (EINTR), it goes back to loop in select(). And
+        if other errors occur (e.g., normal termination), a proper message will
+        be printed out then the thread exits.
+
+    e.  TIME Service
+        The port number of TIME service is 61174 (also defined in echotime.h).
+        This service repeatedly sends the daytime every five seconds to the
+        client.
+        When the thread function timeserv() received the connected socket file
+        descriptor from the main thread, it detaches itself and call str_time()
+        to handle main process of TIME service.
+        In str_time() function, select() function's timeout argument has been
+        set to five seconds. This helps the server to correctly send the daytime
+        every five seconds. When the select() function returns, str_time() tries
+        to read from socket and check the return value and error number. If
+        select() is interrupted by a signal (EINTR), it goes back to the loop.
+        A return value with 0 indicates that the client terminated. And if the
+        return value is -1 and the error is "resource temporarily unavailable",
+        the server then sends the daytime to the client. If other errors occur,
+        message will be printed out then the thread exits.
+
+    f.  Status messages
+        The server prints out status messages while running on. The messages
+        include: Initiating message (services port and listening socket file
+        descriptors), Connecting message (the service type and thread number),
+        Termination message (error function and error number).
+
+    g.  Robustness supports
+
+        i)  Normal client termination
+            The TIME Service client should normally terminates using Ctrl+C.
+            While the ECHO Service client could use Ctrl+C or Ctrl+D to
+            terminate properly. When executing normal client termination, the
+            server will print out messages like "Client termination: socket
+            read returned with value 0" and "xxxx Service finished".
+
+        ii) SIGPIPE Signal
+            Although the server handle the writing of socket very carefully by
+            checking and the status before every write operation, there might
+            still in some scenarios EPIPE will happen (e.g., the connection
+            closed in several instructions between select() returns and write()
+            starts). So the server catches SIGPIPE and prints out the message
+            then returns. In the next loop, the closed socket will be caught
+            and the thread will exits.
+
+        iii)Close the connections that are no longer reachable
+            The server uses SO_KEEPALIVE options to send a keepalive probe to
+            the client if a long time passes with no other data being sent or
+            received. Therefore the server can detect the unreachable clients
+            (e.g., powered off or disconnected from the net), close the
+            threads and release the resources.
+
+2.  Client part (tcpechotimecli.c, echo_cli.c, time_cli.c)
+
+    When starting the client, you can use the following command:
+
+        ./client <server IP address or domain name>
+
+    a.  Arguments processing
+        The client takes either IP address in dotted decimal notation or the
+        domain name. Upon starting, the client checks which of the two is
+        inputted and calls the system function gethostbyaddr() or
+        gethostbyname() then prints out both IP address and the domain name.
+
+    b.  User interactive menu
+        After booting, the client goes into interactive process with the user.
+        The menu options are:
+          1.Echo Service
+          2.Time Service
+          3.Quit
+        In nonblock() function, keyboard canonical mode is turned off and the
+        minimum number of input read is set to 1. It means whatever user types
+        in will be process immediately. The client ignores wrong input and
+        accepts only 1, 2 and 3. When a required service is finished, the
+        client returns to the menu until user chooses quit.
+
+    c.  Parent process, child process and the pipe
+        Whenever a user requests a specific service, the client parent process
+        creates a pipe before forking off a child process to handle the
+        request. The pipe is used for communicating between the parent and
+        the child.
+        After fork(), the child process will close the read end of the pipe, and
+        calls execlp() to start the required service process (i.e., echo_cli or
+        time_cli) using xterm. The pipe file descriptor is also passed to the
+        service process by argument. All the interaction with the user should
+        be in the newly opened window. And all the information will be
+        transported to the parent process by the pipe.
+        The parent process, on the other hand, will close the write end of the
+        pipe. Then it will go into a loop to wait for the pipe file descriptor
+        or stdin is ready to be read. The stdin input will be discard while the
+        information from the pipe will be printed out.
+
+    d.  Error messages through pipe
+        All the errors happened in child process should be transferred to the
+        parent. Therefore, this program redirects the stderr to the pipe.
+
+    e.  ECHO child process
+        The ECHO child process is a detached program called by the parent.
+        When executed, the program receives arguments as server IP address and
+        the pipe file descriptor. Then the ECHO child process starts to connect
+        to the server. After the establishment of the connection, the child
+        process uses select() to monitor both stdin and the socket.
+        The ECHO child process gets user input from stdin and sends it to the
+        server. When user types Ctrl+D, it will call _Shutdown() to close the
+        write end of the socket.
+        If the socket reads EOF or returned with value 0, the client closes
+        since the server is terminated.
+
+    f.  TIME child process
+        The TIME child process is very similar to the ECHO child process.
+        The difference is that the process read repeatedly from the socket and
+        output the daytime. When encounter an error or the user types Ctrl+C,
+        it will end and exit.
+
+    g.  SIGCHLD Signal
+        The parent process will catches the SIGCHLD signal whenever a child
+        process is terminated. It will wait all of the closed children thus
+        avoiding them become zombie.
+
+    h.  Robustness supports
+
+        i)  Command argument
+            When the client cannot parse the command argument to the address
+            of the server successfully, it will prompts and requires a
+            correct input.
+
+        ii) Typo in the interactive menu
+            The client will prompts the user when there is any wrong input
+            and requires a correct input.
+
+        iii)Using parent window while a service is running
+            All the input in the parent window while a child process is
+            running will be discarded. User should use the child window to
+            interactive with the server.
+
+        iv) Normal Termination
+            The ECHO child process can be terminated by Ctrl+C or Ctrl+D.
+            The TIME child process can be terminated by Ctrl+C.
+            If the server terminates when the child process is running, the
+            child will exit and the error message will be printed out in
+            the parent window.
+
+        v)  SIGINT Signal
+            Typing Ctrl+C in parent window will terminates the client.
+            While the Unix will keep the opening child processes as orphan
+            processes, the client will catch SIGINT signal and terminates
+            all children.
+
+        vi) Other child process errors
+            All child process errors that will terminates the process will
+            send the error message to the parent through the pipe.
+
+
+TEST EXAMPLES
+=============
+
+1.  Normal startups and normal terminations
+
+    a.  In the program directory, type "./server &" to start the server in
+        daemon mode.
+
+    b.  On the same machine, type "./client localhost" to start the client.
+
+    c.  On the interactive menu, choose 1 to enter ECHO Service.
+
+    d.  Type something in the child window and press enter, the echo-back
+        message will show in the parent window.
+
+    e.  Press Ctrl+D to terminate the ECHO child process.
+
+    f.  Choose 2 to enter TIME Service on the menu of the parent process.
+
+    g.  Wait for 30 seconds to see the time information printed on both
+        parent and child windows.
+
+    h.  Press Ctrl+C to terminate the TIME child process.
+
+    i.  Choose 3 to exit.
+
+    j.  Use kill to terminate the server process.
+
+2.  Abnormal terminations
+
+    a.  Do the Example.1 steps a-d.
+
+    b.  Use ps and kill to terminate the server process. The client child
+        process should exit and print out the message in parent window.
+
+    c.  Restart the server.
+
+    d.  In the client parent window, choose 2 to enter TIME Service.
+
+    f.  Use ps and kill to terminate the running child process of TIME
+        process. The server should print out the message but continue
+        running.  And the client parent process should return to the
+        menu.
+
+    g.  In the client parent window, choose 1 to enter ECHO Service.
+
+    h.  Use ps and kill to terminate the running parent process of
+        client. The server should print out the message but continue
+        running. And the client parent process closes all the children
+        and exits.
+
+    i.  Use kill to terminate the server process.
